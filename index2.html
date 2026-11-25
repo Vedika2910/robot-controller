@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Arm Rover Controller</title>
+<style>
+:root{
+  --bg:#101418; --panel:#1a2027; --line:#2a323b; --ink:#e9eef2; --dim:#8a96a3;
+  --accent:#ffb400; --go:#2ecc71; --stop:#e5484d;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
+  font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none}
+body{padding:max(12px,env(safe-area-inset-top)) 14px max(16px,env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+h1{font-size:19px;margin:0;flex:1}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--stop);flex:none}
+.dot.on{background:var(--go)}
+button{font:inherit;font-weight:600;color:var(--ink);background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;min-height:44px;padding:0 16px;touch-action:manipulation}
+button:active{transform:scale(.97)}
+#connect{background:var(--accent);color:#111;border:0}
+#status{color:var(--dim);font-size:13px;margin:-6px 0 12px;min-height:18px}
+.grid{display:grid;gap:14px;grid-template-columns:1fr}
+@media (min-width:700px){.grid{grid-template-columns:1fr 1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
+h2{font-size:14px;font-weight:600;color:var(--dim);margin:0 0 10px}
+#pad{position:relative;width:min(78vw,300px);aspect-ratio:1;margin:6px auto 4px;border-radius:50%;
+  background:radial-gradient(circle,#232b34 0 60%,#1d242c 61%);border:2px solid var(--line);touch-action:none}
+#pad::before,#pad::after{content:"";position:absolute;background:var(--line)}
+#pad::before{left:50%;top:10%;bottom:10%;width:1px}
+#pad::after{top:50%;left:10%;right:10%;height:1px}
+#knob{position:absolute;left:50%;top:50%;width:34%;aspect-ratio:1;margin:-17% 0 0 -17%;border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#ffd36a,var(--accent));box-shadow:0 6px 18px #0008;z-index:1}
+#driveVals{text-align:center;color:var(--dim);font-size:13px;font-variant-numeric:tabular-nums}
+.speed{display:flex;align-items:center;gap:10px;margin-top:10px;font-size:14px}
+.joint{display:grid;grid-template-columns:78px 1fr 44px;align-items:center;gap:10px;min-height:48px}
+.joint label{font-size:15px}
+.joint output{text-align:right;font-variant-numeric:tabular-nums;color:var(--accent)}
+input[type=range]{width:100%;height:44px;background:none;-webkit-appearance:none;appearance:none}
+input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:3px;background:var(--line)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:28px;height:28px;margin-top:-11px;border-radius:50%;background:var(--ink)}
+input[type=range]::-moz-range-track{height:6px;border-radius:3px;background:var(--line)}
+input[type=range]::-moz-range-thumb{width:28px;height:28px;border:0;border-radius:50%;background:var(--ink)}
+.row{display:flex;gap:10px;margin-top:10px}
+.row button{flex:1}
+#stop{background:var(--stop);border:0;color:#fff;font-size:18px;min-height:56px;width:100%;margin-top:14px}
+#log{font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--dim);white-space:pre-wrap;max-height:110px;overflow:auto;margin:0}
+.warn{background:#3a2a00;border:1px solid #6b4f00;color:#ffd98a;border-radius:12px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1>Arm Rover</h1>
+  <button id="connect">Connect</button>
+</header>
+<div id="status">Not connected</div>
+<div class="warn" id="nobt" hidden>
+  This browser can't use Bluetooth. On iPhone, open this page in the free <b>Bluefy</b> app
+  (Safari and Chrome on iOS don't support Web Bluetooth). Controls still work below in demo mode.
+</div>
+
+<div class="grid">
+  <section>
+    <h2>Drive</h2>
+    <div id="pad"><div id="knob"></div></div>
+    <div id="driveVals">turn 0 · speed 0</div>
+    <div class="speed">
+      <span>Max speed</span>
+      <input type="range" id="maxSpeed" min="20" max="100" value="70">
+      <output id="maxSpeedOut">70%</output>
+    </div>
+  </section>
+
+  <section>
+    <h2>Arm</h2>
+    <div id="joints"></div>
+    <div class="row">
+      <button id="home">Home arm</button>
+      <button id="grip">Open / close grip</button>
+    </div>
+  </section>
+</div>
+
+<button id="stop">STOP</button>
+
+<section style="margin-top:14px">
+  <h2>Log</h2>
+  <pre id="log"></pre>
+</section>
+
+<script>
+{
+  // ---------- HM-10 BLE details ----------
+  // HM-10 UART service / characteristic, written out in full (works in every browser)
+  const SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+  const CHAR_UUID    = "0000ffe1-0000-1000-8000-00805f9b34fb";
+  const JOINTS = [
+    {n:1, name:"Base"},     {n:2, name:"Shoulder"}, {n:3, name:"Elbow"},
+    {n:4, name:"Wrist"},    {n:5, name:"Gripper"}
+  ];
+  const HOME = [0, 90, 90, 90, 90]; // must match armHome[] in the Arduino sketch
+  const GRIP_OPEN = 90, GRIP_CLOSED = -20;  // tune for your gripper
+
+  const $ = id => document.getElementById(id);
+  const logEl = $("log");
+  const log = msg => { logEl.textContent = (msg + "\n" + logEl.textContent).slice(0, 2000); };
+
+  let device = null, chr = null;
+  const enc = new TextEncoder(), dec = new TextDecoder();
+
+  // ---------- Build arm sliders ----------
+  $("joints").innerHTML = JOINTS.map((j, i) => `
+    <div class="joint">
+      <label for="j${j.n}">${j.name}</label>
+      <input type="range" id="j${j.n}" min="-90" max="90" value="${HOME[i]}">
+      <output id="o${j.n}">${HOME[i]}°</output>
+    </div>`).join("");
+
+  // ---------- Send queue ----------
+  // BLE allows one write at a time and 20 bytes per write, so commands are
+  // queued. Drive and slider values are "latest wins" so we never fall behind.
+  let busy = false, pendingDrive = null;
+  const pendingJoint = new Map();
+  const queue = [];
+
+  function send(line)        { queue.push(line); pump(); }
+  function sendDrive(x, y)   { pendingDrive = `D ${x} ${y}`; pump(); }
+  function sendJoint(n, a)   { pendingJoint.set(n, a); pump(); }
+
+  async function write(line) {
+    if (!chr) { log("demo › " + line); return; }
+    const data = enc.encode(line + "\n");
+    if (chr.writeValueWithoutResponse) await chr.writeValueWithoutResponse(data);
+    else await chr.writeValue(data);
+  }
+
+  async function pump() {
+    if (busy) return;
+    busy = true;
+    try {
+      while (queue.length || pendingDrive || pendingJoint.size) {
+        let line;
+        if (queue.length) line = queue.shift();
+        else if (pendingDrive) { line = pendingDrive; pendingDrive = null; }
+        else { const [n, a] = pendingJoint.entries().next().value; pendingJoint.delete(n); line = `J ${n} ${a}`; }
+        await write(line);
+        if (!chr) await new Promise(r => setTimeout(r, 0));
+      }
+    } catch (e) { log("write failed: " + errText(e)); }
+    busy = false;
+  }
+
+  // ---------- Bluetooth ----------
+  if (!navigator.bluetooth) $("nobt").hidden = false;
+
+  let rxBuf = "";
+  function onNotify(e) {
+    rxBuf += dec.decode(e.target.value);
+    let i;
+    while ((i = rxBuf.indexOf("\n")) >= 0) {
+      const line = rxBuf.slice(0, i).trim();
+      rxBuf = rxBuf.slice(i + 1);
+      if (!line) continue;
+      log("robot › " + line);
+      if (line[0] === "A") {                       // "A j1 j2 j3 j4 j5"
+        line.slice(1).trim().split(/\s+/).map(Number).forEach((a, k) => {
+          const s = $("j" + (k + 1)); if (s && !isNaN(a)) { s.value = a; $("o" + (k + 1)).textContent = a + "°"; }
+        });
+      }
+    }
+  }
+
+  function setConnected(on, text) {
+    $("dot").classList.toggle("on", on);
+    $("status").textContent = text;
+    $("connect").textContent = on ? "Disconnect" : "Connect";
+  }
+
+  const errText = e => (e && (e.message || e.name)) || String(e);
+
+  async function connect() {
+    if (!navigator.bluetooth) { log("No Web Bluetooth here (use Bluefy on iPhone)"); return; }
+    let step = "choosing device";
+    try {
+      setConnected(false, "Searching…");
+      // Show every nearby Bluetooth device; pick "DSD TECH" (or "HMSoft").
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [SERVICE_UUID]
+      });
+      log("1/4 picked: " + (device.name || "(no name)"));
+      const onDrop = () => {
+        chr = null; setConnected(false, "Disconnected — robot wheels stop automatically"); log("disconnected");
+      };
+      try { device.addEventListener("gattserverdisconnected", onDrop); }
+      catch (_) { device.ongattserverdisconnected = onDrop; }
+
+      step = "connecting";
+      setConnected(false, "Connecting to " + (device.name || "HM-10") + "…");
+      const server = await device.gatt.connect();
+      log("2/4 connected to device");
+
+      step = "finding service FFE0";
+      const svc = await server.getPrimaryService(SERVICE_UUID);
+      log("3/4 found service");
+
+      step = "finding characteristic FFE1";
+      chr = await svc.getCharacteristic(CHAR_UUID);
+      log("4/4 found characteristic");
+
+      // Notifications are only for reading arm angles back; driving works without them.
+      try {
+        await chr.startNotifications();
+        chr.addEventListener("characteristicvaluechanged", onNotify);
+      } catch (e) { log("(no notifications: " + errText(e) + ") - driving still works"); }
+
+      setConnected(true, "Connected to " + (device.name || "HM-10"));
+      log("connected");
+      send("?");                                    // ask robot for arm angles
+    } catch (e) {
+      chr = null;
+      setConnected(false, "Not connected");
+      log("connect failed while " + step + ": " + errText(e));
+    }
+  }
+
+  $("connect").addEventListener("click", () => {
+    if (device && device.gatt.connected) device.gatt.disconnect(); else connect();
+  });
+
+  // ---------- Joystick ----------
+  const pad = $("pad"), knob = $("knob");
+  let stick = {x: 0, y: 0}, active = false, zeroSends = 0;
+
+  function moveStick(ev) {
+    const r = pad.getBoundingClientRect();
+    const R = r.width / 2;
+    let dx = ev.clientX - (r.left + R), dy = ev.clientY - (r.top + R);
+    const d = Math.hypot(dx, dy), lim = R * 0.72;
+    if (d > lim) { dx *= lim / d; dy *= lim / d; }
+    // One direction at a time: up/down = straight, left/right = spin in place
+    if (Math.abs(dy) >= Math.abs(dx)) dx = 0; else dy = 0;
+    knob.style.transform = `translate(${dx}px,${dy}px)`;
+    const max = +$("maxSpeed").value;
+    stick.x = Math.round(dx / lim * max);
+    stick.y = Math.round(-dy / lim * max);
+    $("driveVals").textContent = `turn ${stick.x} · speed ${stick.y}`;
+  }
+  function release() {
+    active = false; stick = {x: 0, y: 0}; zeroSends = 3;
+    knob.style.transform = ""; $("driveVals").textContent = "turn 0 · speed 0";
+  }
+  pad.addEventListener("pointerdown", e => { active = true; pad.setPointerCapture(e.pointerId); moveStick(e); });
+  pad.addEventListener("pointermove", e => { if (active) moveStick(e); });
+  pad.addEventListener("pointerup", release);
+  pad.addEventListener("pointercancel", release);
+
+  // Resend drive every 100 ms while held (robot stops if this stream stops)
+  setInterval(() => {
+    if (active) sendDrive(stick.x, stick.y);
+    else if (zeroSends > 0) { zeroSends--; sendDrive(0, 0); }
+  }, 100);
+
+  $("maxSpeed").addEventListener("input", e => { $("maxSpeedOut").textContent = e.target.value + "%"; });
+
+  // ---------- Arm controls ----------
+  JOINTS.forEach(j => {
+    $("j" + j.n).addEventListener("input", e => {
+      $("o" + j.n).textContent = e.target.value + "°";
+      sendJoint(j.n, e.target.value);
+    });
+  });
+
+  $("home").addEventListener("click", () => {
+    HOME.forEach((a, k) => { $("j" + (k + 1)).value = a; $("o" + (k + 1)).textContent = a + "°"; });
+    send("H");
+  });
+
+  $("grip").addEventListener("click", () => {
+    const s = $("j5");
+    const a = (+s.value > (GRIP_OPEN + GRIP_CLOSED) / 2) ? GRIP_CLOSED : GRIP_OPEN;
+    s.value = a; $("o5").textContent = a + "°"; sendJoint(5, a);
+  });
+
+  $("stop").addEventListener("click", () => {
+    release(); zeroSends = 0; pendingDrive = null; send("S");
+  });
+
+  // Stop when the app goes to the background
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { release(); send("S"); } });
+}
+</script>
+</body>
+</html>
